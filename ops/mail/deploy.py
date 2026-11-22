@@ -40,6 +40,47 @@ def settings(target):
     return result['result']
 
 
+def active_settings(target):
+    require(os.environ['CLOUDFLARE_ACCOUNT_ID'] == ACCOUNT, 'Unexpected Cloudflare account')
+    base = f'https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/workers/scripts/{target}'
+    headers = {'Authorization': 'Bearer ' + os.environ['CLOUDFLARE_API_TOKEN']}
+    deployments = json.loads(request(base + '/deployments', headers))
+    require(deployments.get('success'), 'Cannot read active deployment')
+    listed = deployments['result']['deployments']
+    require(listed, 'No active deployment found')
+    # The API does not guarantee order; the newest deployment is the one serving traffic.
+    versions = max(listed, key=lambda d: d['created_on'])['versions']
+    require(len(versions) == 1 and versions[0]['percentage'] == 100, 'Mixed deployment; resolve rollout before releasing')
+    version = json.loads(request(base + '/versions/' + versions[0]['version_id'], headers))
+    require(version.get('success'), 'Cannot read active version')
+    return {'bindings': version['result']['resources']['bindings']}
+
+
+REQUIRED = {'db', 'kv', 'ai', 'ws', 'assets', 'forward'}
+
+
+def check_both_states(target, latest, active, source, revision, require_complete=False):
+    config(target, latest, source, revision)
+    config(target, active, source, revision)
+    if require_complete:
+        latest_names = {b['name'] for b in latest['bindings']}
+        active_names = {b['name'] for b in active['bindings']}
+        require(REQUIRED <= latest_names and REQUIRED <= active_names, 'Latest draft and active production bindings disagree')
+
+
+def merged(latest, active):
+    # A binding-less preview may sit in the latest draft. Rebuild from the union so optional live
+    # resources (R2, mail restrictions) are carried over instead of dropped or blocking the repair.
+    names = {b['name'] for b in latest['bindings']}
+    return {'bindings': latest['bindings'] + [b for b in active['bindings'] if b['name'] not in names]}
+
+
+def release_config(target, latest, active, source, revision):
+    check_both_states(target, latest, active, source, revision)
+    live = merged(latest, active)
+    return live, config(target, live, source, revision)
+
+
 def config(target, live, source, revision):
     require(target in TARGETS, 'Unknown production Worker')
     require(re.fullmatch('[0-9a-f]{40}', source) and re.fullmatch('[0-9a-f]{40}', revision), 'Full commit SHA required')
@@ -91,8 +132,7 @@ def config(target, live, source, revision):
 
 
 def prepare(target, worker, source, revision):
-    live = settings(target)
-    cfg = config(target, live, source, revision)
+    live, cfg = release_config(target, settings(target), active_settings(target), source, revision)
     jwt = next(b for b in live['bindings'] if b['name'] == 'jwt_secret')
     if jwt['type'] == 'plain_text':
         require(hmac.compare_digest(jwt['text'], os.environ['JWT_SECRET']), 'Environment login secret differs from live Worker')
@@ -104,9 +144,7 @@ def prepare(target, worker, source, revision):
 
 def verify(target, source, revision):
     live = settings(target)
-    config(target, live, source, revision)
-    names = {b['name'] for b in live['bindings']}
-    require({'db', 'kv', 'ai', 'ws', 'assets', 'forward'} <= names, 'Required live binding missing')
+    check_both_states(target, live, active_settings(target), source, revision, require_complete=True)
     origin = 'https://mail.' + TARGETS[target]['domain']
     timestamp = str(int(time.time()))
     signature = hmac.new(os.environ['JWT_SECRET'].encode(),

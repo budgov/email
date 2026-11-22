@@ -1,5 +1,5 @@
 import unittest
-from deploy import config, TARGETS
+from deploy import config, check_both_states, release_config, TARGETS
 
 
 class ProductionConfigTests(unittest.TestCase):
@@ -57,6 +57,33 @@ class ProductionConfigTests(unittest.TestCase):
             config('cloud-mail', {}, 'a' * 40, 'b' * 40)
         with self.assertRaises(RuntimeError):
             config('juuer-mail', self.live('juuer-mail'), 'main', 'b' * 40)
+
+    def test_active_resource_conflict_cannot_hide_behind_draft(self):
+        active = self.live('budgov-mail')
+        with self.assertRaises(RuntimeError):
+            check_both_states('juuer-mail', self.live('juuer-mail'), active, 'a' * 40, 'b' * 40)
+
+    def test_incomplete_preview_is_repairable_but_cannot_pass_verification(self):
+        draft = {'bindings': [{'name': 'jwt_secret', 'type': 'secret_text'}]}
+        check_both_states('juuer-mail', draft, self.live('juuer-mail'), 'a' * 40, 'b' * 40)
+        with self.assertRaises(RuntimeError):
+            check_both_states('juuer-mail', draft, self.live('juuer-mail'), 'a' * 40, 'b' * 40, require_complete=True)
+
+    def test_bindingless_preview_draft_does_not_block_or_drop_production_bindings(self):
+        # Realistic production: every runtime binding plus optional R2 and a restricted sender.
+        active = self.live('juuer-mail')
+        active['bindings'] += [
+            {'name': 'ai', 'type': 'ai'},
+            {'name': 'assets', 'type': 'assets'},
+            {'name': 'ws', 'type': 'durable_object_namespace', 'class_name': 'MailHub'},
+            {'name': 'forward', 'type': 'send_email', 'allowed_destination_addresses': ['a@juuer.com']},
+            {'name': 'r2', 'type': 'r2_bucket', 'bucket_name': 'existing'},
+        ]
+        draft = {'bindings': [{'name': 'jwt_secret', 'type': 'secret_text'}]}
+        _, cfg = release_config('juuer-mail', draft, active, 'a' * 40, 'b' * 40)
+        self.assertEqual(cfg['r2_buckets'], [{'binding': 'r2', 'bucket_name': 'existing'}])
+        self.assertEqual(cfg['send_email'], [{'name': 'forward', 'allowed_destination_addresses': ['a@juuer.com']}])
+        self.assertEqual(cfg['d1_databases'][0]['database_id'], TARGETS['juuer-mail']['database_id'])
 
 
 if __name__ == '__main__':
