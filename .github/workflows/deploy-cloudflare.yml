@@ -1,0 +1,11 @@
+# Keep this path registered and disabled in GitHub Actions. Upstream uses the
+# same path on main; deleting it can lose the persistent disabled state.
+name: Legacy mail deployment (disabled)
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  notice:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Use Release production mail on the production branch.'
