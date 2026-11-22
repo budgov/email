@@ -39,7 +39,10 @@ for target, spec in TARGETS.items():
     require(any(d.get('hostname') == 'mail.' + spec['domain'] and d.get('service') == target for d in domains), 'Production custom domain mismatch')
     bindings = api(base + f'/workers/scripts/{target}/settings')['result']['bindings']
     mapped = {b['name']: b for b in bindings}
-    require(mapped['db']['id'] == spec['database_id'] and mapped['kv']['namespace_id'] == spec['kv_id'], 'Production resource mismatch')
+    print(target + ': binding names/types: ' + json.dumps({b['name']: b['type'] for b in bindings}, sort_keys=True))
+    deployments = api(base + f'/workers/scripts/{target}/deployments')['result']
+    print(target + ': recent deployments: ' + json.dumps(deployments, sort_keys=True))
+    require(mapped.get('db', {}).get('id') == spec['database_id'] and mapped.get('kv', {}).get('namespace_id') == spec['kv_id'], 'Production resource mismatch: ' + target)
 
 zones = page_list(f'/zones?account.id={ACCOUNT}')
 require({'budgov.com', 'juuer.com'} <= {z['name'] for z in zones}, 'Cannot inspect both production zones')
