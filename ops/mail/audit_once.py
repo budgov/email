@@ -22,6 +22,9 @@ for attempt in range(3):
     version_id = active['versions'][0]['version_id']
     version = api(prefix + f'/workers/scripts/{target}/versions/{version_id}')
     print(target, 'active version', version_id, 'bindings', sorted(b['name'] for b in version['resources']['bindings'] if b['type'] not in ('plain_text','json','secret_text')))
+    if attempt == 0:
+        versions = api(prefix + f'/workers/scripts/{target}/versions')
+        print(target, 'recent versions', json.dumps([{'id': v['id'], 'created_on': v.get('metadata', {}).get('created_on'), 'source': v.get('metadata', {}).get('source')} for v in versions['items'][:4]]))
     timestamp = str(int(time.time()))
     signature = hmac.new(os.environ['JWT_SECRET'].encode(), f'GET\n/api/_deployment/health\n{timestamp}'.encode(), hashlib.sha256).hexdigest()
     health = json.loads(request('https://mail.' + spec['domain'] + '/api/_deployment/health', {'x-deploy-time': timestamp, 'x-deploy-signature': signature}))
