@@ -2,7 +2,7 @@ name: Deploy mail Workers
 on:
   push:
     branches: [main]
-    paths: ['mail-worker/**', 'mail-vue/**', '.github/workflows/deploy-cloudflare.yml']
+    paths: ['mail-worker/**', 'mail-vue/**']
   workflow_dispatch:
     inputs:
       target:
@@ -88,23 +88,10 @@ jobs:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           pnpm wrangler deploy -c wrangler-production.json
-          python3 - <<'PY'
-          import json, os, time, urllib.parse, urllib.request
-          origin = 'https://' + os.environ['CUSTOM_DOMAIN']
-          class SameOrigin(urllib.request.HTTPRedirectHandler):
-              def redirect_request(self, *args):
-                  raise RuntimeError('Unexpected redirect')
-          client = urllib.request.build_opener(SameOrigin())
-          time.sleep(15)
-          try:
-              with client.open(origin+'/api/init/'+urllib.parse.quote(os.environ['JWT_SECRET'], safe=''), timeout=90) as res:
-                  if res.read().strip() != b'success':
-                      raise RuntimeError()
-              with client.open(origin+'/api/setting/websiteConfig', timeout=20) as res:
-                  result = json.load(res)
-                  if result.get('code') != 200 or not isinstance(result.get('data'), dict):
-                      raise RuntimeError()
-          except Exception:
-              raise SystemExit('Database initialization or public configuration check failed')
-          print('Database initialization and public configuration passed')
-          PY
+          sleep 15
+          encoded_secret=$(jq -rn --arg secret "$JWT_SECRET" '$secret|@uri')
+          echo "::add-mask::$encoded_secret"
+          result=$(curl --silent --show-error --fail --max-time 90 "https://$CUSTOM_DOMAIN/api/init/$encoded_secret")
+          [[ "$result" == 'success' ]] || { echo 'Application initialization failed'; exit 1; }
+          curl -fsS --max-time 20 "https://$CUSTOM_DOMAIN/api/setting/websiteConfig" |
+            jq -e '.code == 200 and (.data | type == "object")'
