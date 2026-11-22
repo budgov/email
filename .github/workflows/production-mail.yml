@@ -1,0 +1,100 @@
+name: Release production mail
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Worker to release
+        type: choice
+        required: true
+        options: [both, juuer-mail, budgov-mail]
+      source_revision:
+        description: Optional full application commit SHA; blank uses ops/mail/source-revision
+        type: string
+        required: false
+permissions:
+  contents: read
+jobs:
+  source:
+    if: github.ref == 'refs/heads/production'
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.source.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: source
+        env:
+          SOURCE_INPUT: ${{ inputs.source_revision }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re
+          revision = os.environ['SOURCE_INPUT'].strip() or pathlib.Path('ops/mail/source-revision').read_text().strip()
+          if not re.fullmatch('[0-9a-f]{40}', revision):
+              raise SystemExit('A full 40-character commit SHA is required')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('revision=' + revision + '\n')
+          PY
+      - name: Regression checks
+        run: |
+          python3 -m unittest discover -s ops/mail -p 'test_*.py'
+          node --test ops/mail/health.test.mjs
+  deploy:
+    needs: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        target: ${{ fromJSON(inputs.target == 'both' && '["juuer-mail","budgov-mail"]' || format('["{0}"]', inputs.target)) }}
+    environment: ${{ matrix.target }}
+    concurrency:
+      group: deploy-${{ matrix.target }}
+      cancel-in-progress: false
+    env:
+      TARGET: ${{ matrix.target }}
+      SOURCE: ${{ needs.source.outputs.revision }}
+      DEPLOY_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: release
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.revision }}
+          path: app
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate and preserve production bindings
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: python3 release/ops/mail/deploy.py prepare "$TARGET" "$SOURCE" "$DEPLOY_REVISION" app/mail-worker
+      - name: Build pinned application
+        run: |
+          pnpm --dir app/mail-worker install --frozen-lockfile
+          pnpm --dir app/mail-vue install --frozen-lockfile
+          pnpm --dir app/mail-vue run build
+      - name: Check production bundle
+        working-directory: app/mail-worker
+        run: pnpm dlx wrangler@4.90.0 deploy --dry-run -c wrangler-production.json
+      - name: Deploy exact production target
+        working-directory: app/mail-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm dlx wrangler@4.90.0 deploy -c wrangler-production.json
+      - name: Verify runtime, initialize application and recheck
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          python3 release/ops/mail/deploy.py verify "$TARGET" "$SOURCE" "$DEPLOY_REVISION"
+          python3 release/ops/mail/deploy.py init "$TARGET" "$SOURCE" "$DEPLOY_REVISION"
+          python3 release/ops/mail/deploy.py verify "$TARGET" "$SOURCE" "$DEPLOY_REVISION"

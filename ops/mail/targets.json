@@ -1,0 +1,14 @@
+{
+  "budgov-mail": {
+    "domain": "budgov.com",
+    "database_name": "email",
+    "database_id": "da275f17-bee4-4c99-aaa2-5e82a958cc46",
+    "kv_id": "6b610989930342a585c856e61ad55dc8"
+  },
+  "juuer-mail": {
+    "domain": "juuer.com",
+    "database_name": "juuer-mail",
+    "database_id": "324828fb-f707-4089-a3c7-95bf114c2abb",
+    "kv_id": "ba6738f06072419c99090476fc7a21d7"
+  }
+}
